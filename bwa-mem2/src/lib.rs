@@ -1,4 +1,5 @@
 use std::{ffi::{CStr, CString}, path::Path};
+use itertools::Itertools;
 use noodles::sam::{self, header::record::value::map::ReferenceSequence};
 use noodles::sam::header::record::value::Map;
 use noodles::fastq;
@@ -78,6 +79,7 @@ impl Drop for FMIndex {
 }
 
 /// BWA opts object. Currently only default opts are enabled
+#[derive(Debug, Copy, Clone)]
 pub struct AlignerOpts {
     opts: bwa_mem2_sys::mem_opt_t,
 }
@@ -101,13 +103,13 @@ impl AlignerOpts {
         (self.opts.chunk_size * self.opts.n_threads as i64).try_into().unwrap()
     }
 
-    pub fn set_n_threads(mut self, n_threads: usize) -> Self {
+    pub fn with_n_threads(mut self, n_threads: usize) -> Self {
         self.opts.n_threads = n_threads as i32;
         self
     }
 
     /// Set alignment scores
-    pub fn set_scores(
+    pub fn with_scores(
         mut self,
         matchp: i32,
         mismatch: i32,
@@ -128,21 +130,26 @@ impl AlignerOpts {
     }
 
     /// Set clipping score penalties
-    pub fn set_clip_scores(mut self, clip5: i32, clip3: i32) -> Self {
+    pub fn with_clip_scores(mut self, clip5: i32, clip3: i32) -> Self {
         self.opts.pen_clip5 = clip5;
         self.opts.pen_clip3 = clip3;
         self
     }
 
     /// Set unpaired read penalty
-    pub fn set_unpaired(mut self, unpaired: i32) -> Self {
+    pub fn with_unpaired(mut self, unpaired: i32) -> Self {
         self.opts.pen_unpaired = unpaired;
         self
     }
 
     /// Mark shorter splits as secondary
-    pub fn set_no_multi(mut self) -> Self {
+    pub fn with_no_multi(mut self) -> Self {
         self.opts.flag |= 0x10; // MEM_F_NO_MULTI
+        self
+    }
+
+    fn pe_mode(mut self) -> Self {
+        self.opts.flag |= bwa_mem2_sys::MEM_F_PE as i32;
         self
     }
 }
@@ -261,6 +268,40 @@ impl BurrowsWheelerAligner {
                 libc::free(seq.sam as *mut libc::c_void);
                 sam
             })
+        }
+    }
+
+    pub fn align_read_pairs(&mut self, records: &mut [(fastq::Record, fastq::Record)]) ->
+        impl ExactSizeIterator<Item = (sam::Record, sam::Record)>
+    {
+        let mut seqs = records.iter_mut().enumerate().flat_map(|(i, (fq1, fq2))|
+            [new_bseq1_t(i, fq1), new_bseq1_t(i+1, fq2)]
+        ).collect::<Vec<_>>();
+
+        let mut opts = self.opts.clone().pe_mode().opts;
+        
+        let num_reads = seqs.len().try_into().unwrap();
+        unsafe {
+            let worker = WorkerWrapper::new(num_reads, self.opts.opts.n_threads);
+            (*worker.ptr).ref_string = self.index.ref_bytes.as_ptr() as *mut u8;
+            (*worker.ptr).nthreads = self.opts.opts.n_threads.try_into().unwrap();
+            (*worker.ptr).nreads = num_reads;
+            (*worker.ptr).fmi = &mut self.index.fm_index as *mut bwa_mem2_sys::FMI_search;
+
+            //let index = self.index.fm_index;
+            bwa_mem2_sys::mem_process_seqs(
+                &mut opts,
+                0,
+                num_reads,
+                seqs.as_mut_ptr(), 
+                self.pe_stats.inner.as_ptr(),
+                worker.ptr,
+            );
+            seqs.into_iter().map(|seq| {
+                let sam = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
+                libc::free(seq.sam as *mut libc::c_void);
+                sam
+            }).tuples()
         }
     }
 }
