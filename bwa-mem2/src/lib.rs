@@ -225,8 +225,14 @@ impl BurrowsWheelerAligner {
         let header = index.create_sam_header();
         Self { index, opts, header, pe_stats }
     }
+
     pub fn get_sam_header(&self) -> sam::Header {
         self.header.clone()
+    }
+
+    /// Return the chunk size (in terms of number of bases) used by the aligner
+    pub fn chunk_size(&self) -> usize {
+        self.opts.get_actual_chunk_size()
     }
 
     pub fn align_reads(&mut self, records: &mut [fastq::Record]) -> impl ExactSizeIterator<Item = sam::Record> {
