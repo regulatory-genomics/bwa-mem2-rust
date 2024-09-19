@@ -1,4 +1,4 @@
-use std::{ffi::{CStr, CString}, path::Path};
+use std::{ffi::{CStr, CString}, os::fd::AsRawFd, path::Path};
 use itertools::Itertools;
 use noodles::sam::{self, header::record::value::map::ReferenceSequence};
 use noodles::sam::header::record::value::Map;
@@ -243,66 +243,56 @@ impl BurrowsWheelerAligner {
     }
 
     pub fn align_reads(&mut self, records: &mut [fastq::Record]) -> impl ExactSizeIterator<Item = sam::Record> {
-        //unsafe { bwa_mem2_sys::bwa_verbose = 0; }
-        let mut seqs: Vec<_> = records.iter_mut().enumerate().map(|(i, fq)| new_bseq1_t(i, fq)).collect();
-        let mut opts = self.opts.opts.clone();
-        let num_reads = seqs.len().try_into().unwrap();
-        unsafe {
-            let worker = WorkerWrapper::new(num_reads, self.opts.opts.n_threads);
-            (*worker.ptr).ref_string = self.index.ref_bytes.as_ptr() as *mut u8;
-            (*worker.ptr).nthreads = self.opts.opts.n_threads.try_into().unwrap();
-            (*worker.ptr).nreads = num_reads;
-            (*worker.ptr).fmi = &mut self.index.fm_index as *mut bwa_mem2_sys::FMI_search;
-
-            //let index = self.index.fm_index;
-            bwa_mem2_sys::mem_process_seqs(
-                &mut opts,
-                0,
-                num_reads,
-                seqs.as_mut_ptr(), 
-                self.pe_stats.inner.as_ptr(),
-                worker.ptr,
-            );
-            seqs.into_iter().map(|seq| {
-                let sam = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
-                libc::free(seq.sam as *mut libc::c_void);
-                sam
-            })
-        }
+        let seqs: Vec<_> = records.iter_mut().enumerate().map(|(i, fq)| new_bseq1_t(i, fq)).collect();
+        let opts = self.opts.opts.clone();
+        align(seqs, &mut self.index, opts, &self.pe_stats)
     }
 
     pub fn align_read_pairs(&mut self, records: &mut [(fastq::Record, fastq::Record)]) ->
         impl ExactSizeIterator<Item = (sam::Record, sam::Record)>
     {
-        let mut seqs = records.iter_mut().enumerate().flat_map(|(i, (fq1, fq2))|
+        let seqs = records.iter_mut().enumerate().flat_map(|(i, (fq1, fq2))|
             [new_bseq1_t(i, fq1), new_bseq1_t(i+1, fq2)]
         ).collect::<Vec<_>>();
+        let opts = self.opts.clone().pe_mode().opts;
+        align(seqs, &mut self.index, opts, &self.pe_stats).tuples()
+    }
+}
 
-        let mut opts = self.opts.clone().pe_mode().opts;
-        
-        let num_reads = seqs.len().try_into().unwrap();
-        unsafe {
-            let worker = WorkerWrapper::new(num_reads, self.opts.opts.n_threads);
-            (*worker.ptr).ref_string = self.index.ref_bytes.as_ptr() as *mut u8;
-            (*worker.ptr).nthreads = self.opts.opts.n_threads.try_into().unwrap();
-            (*worker.ptr).nreads = num_reads;
-            (*worker.ptr).fmi = &mut self.index.fm_index as *mut bwa_mem2_sys::FMI_search;
+fn align(
+    mut seqs: Vec<bwa_mem2_sys::bseq1_t>,
+    index: &mut FMIndex,
+    mut opts: bwa_mem2_sys::mem_opt_t,
+    pe_stats: &PairedEndStats,
+) -> impl ExactSizeIterator<Item = sam::Record>
+{
+    let num_reads = seqs.len().try_into().unwrap();
+    let worker = WorkerWrapper::new(num_reads, opts.n_threads);
+    unsafe {
+        (*worker.ptr).ref_string = index.ref_bytes.as_ptr() as *mut u8;
+        (*worker.ptr).nthreads = opts.n_threads.try_into().unwrap();
+        (*worker.ptr).nreads = num_reads;
+        (*worker.ptr).fmi = &mut index.fm_index as *mut bwa_mem2_sys::FMI_search;
 
-            //let index = self.index.fm_index;
-            bwa_mem2_sys::mem_process_seqs(
-                &mut opts,
-                0,
-                num_reads,
-                seqs.as_mut_ptr(), 
-                self.pe_stats.inner.as_ptr(),
-                worker.ptr,
-            );
-            seqs.into_iter().map(|seq| {
-                let sam = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
-                libc::free(seq.sam as *mut libc::c_void);
-                sam
-            }).tuples()
-        }
+        let dev_null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        let stderr_backup = libc::dup(libc::STDERR_FILENO);
+        libc::dup2(dev_null.as_raw_fd(), libc::STDERR_FILENO);
+        bwa_mem2_sys::mem_process_seqs(
+            &mut opts,
+            0,
+            num_reads,
+            seqs.as_mut_ptr(), 
+            pe_stats.inner.as_ptr(),
+            worker.ptr,
+        );
+        libc::dup2(stderr_backup, libc::STDERR_FILENO);
+        libc::close(stderr_backup);
+
+        seqs.into_iter().map(|seq| {
+            let sam = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
+            libc::free(seq.sam as *mut libc::c_void);
+            sam
+        })
     }
 }
 
