@@ -1,0 +1,15 @@
+[package]
+name = "bwa-mem2-sys"
+version = "0.1.0"
+edition = "2021"
+license-file = "ext/bwa-mem2/LICENSE"
+build = "build.rs"
+links = "bwa"
+description = "Build script for compiling bwa-mem2 C library from source."
+categories = ["ffi"]
+
+[dependencies]
+libc = "*"
+
+[build-dependencies]
+cc = { version = "*", features = ["parallel"] }

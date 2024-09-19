@@ -1,0 +1,16 @@
+[package]
+name = "bwa-mem2"
+version = "0.1.0"
+edition = "2021"
+authors = ["Kai Zhang <zhangkai33@westlake.edu.cn>"]
+license = "MIT"
+
+[dependencies]
+libc = "*"
+bwa-mem2-sys = { version = "0.1", workspace = true }
+bstr = "1.0"
+noodles = { version = "0.80", features = ["core", "fastq", "bam", "sam"] }
+
+[dev-dependencies]
+flate2 = "1.0"
+itertools = "0.13"
