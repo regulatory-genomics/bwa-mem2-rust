@@ -1,7 +1,4 @@
 #include "ext/bwa-mem2/src/fastmap.h"
-#include <iostream>
-#include <stdio.h>
-#include <stdlib.h>
 
 uint64_t tprof[LIM_R][LIM_C];
 
@@ -103,30 +100,4 @@ void destroy_worker_t(worker_t *w, int32_t nthreads)
     }
 
     free(w);
-}
-
-alloc_ref_string(char* binary_seq_file) {
-    FILE *fr = fopen(binary_seq_file, "r");
-
-    if (fr == NULL) {
-        fprintf(stderr, "Error: can't open %s input file\n", binary_seq_file);
-        exit(EXIT_FAILURE);
-    }
-
-    int64_t rlen = 0;
-    fseek(fr, 0, SEEK_END);
-    rlen = ftell(fr);
-    ref_string = (uint8_t*) _mm_malloc(rlen, 64);
-
-    rewind(fr);
-
-    /* Reading ref. sequence */
-    err_fread_noeof(ref_string, 1, rlen, fr);
-
-    uint64_t timer  = __rdtsc();
-    tprof[REF_IO][0] += timer - tim;
-
-    fclose(fr);
-
-    fclose(fr);
 }

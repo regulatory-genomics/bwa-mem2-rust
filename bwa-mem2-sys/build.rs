@@ -117,7 +117,7 @@ fn main() {
     }
 
     // Compile to static library
-    build.compile("libbwa.a");
+    build.compile("libbwa_mem2.a");
 
     println!("cargo:rustc-link-search=native={}", env::var("OUT_DIR").unwrap());
 
@@ -131,5 +131,4 @@ fn main() {
 
     // Link the C++ standard library
     //println!("cargo:rustc-link-lib=stdc++");
-
 }

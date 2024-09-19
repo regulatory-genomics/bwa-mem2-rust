@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license-file = "ext/bwa-mem2/LICENSE"
 build = "build.rs"
-links = "bwa"
+links = "bwa_mem2"
 description = "Build script for compiling bwa-mem2 C library from source."
 categories = ["ffi"]
 
