@@ -39,8 +39,11 @@ impl FMIndex {
             .expect(&format!("Could not read reference file {}", ref_file));
 
         unsafe {
-            let mut idx = bwa_mem2_sys::FMI_search::new(idx_file.as_ptr());
-            idx.load_index();
+            let idx = with_stderr_disabled(|| {
+                let mut idx = bwa_mem2_sys::FMI_search::new(idx_file.as_ptr());
+                idx.load_index();
+                idx
+            });
 
             let num_contigs = (*((*(idx._base.idx)).bns)).n_seqs;
             for i in 0..num_contigs as isize {
@@ -274,19 +277,14 @@ fn align(
         (*worker.ptr).nreads = num_reads;
         (*worker.ptr).fmi = &mut index.fm_index as *mut bwa_mem2_sys::FMI_search;
 
-        let dev_null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
-        let stderr_backup = libc::dup(libc::STDERR_FILENO);
-        libc::dup2(dev_null.as_raw_fd(), libc::STDERR_FILENO);
-        bwa_mem2_sys::mem_process_seqs(
+        with_stderr_disabled(|| bwa_mem2_sys::mem_process_seqs(
             &mut opts,
             0,
             num_reads,
             seqs.as_mut_ptr(), 
             pe_stats.inner.as_ptr(),
             worker.ptr,
-        );
-        libc::dup2(stderr_backup, libc::STDERR_FILENO);
-        libc::close(stderr_backup);
+        ));
 
         seqs.into_iter().map(|seq| {
             let sam = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
@@ -306,6 +304,16 @@ fn new_bseq1_t(id: usize, fq: &mut fastq::Record) -> bwa_mem2_sys::bseq1_t {
         comment: std::ptr::null_mut(),
         sam: std::ptr::null_mut(),
     }
+}
+
+unsafe fn with_stderr_disabled<F: FnOnce() -> R, R>(f: F) -> R {
+    let dev_null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+    let stderr_backup = libc::dup(libc::STDERR_FILENO);
+    libc::dup2(dev_null.as_raw_fd(), libc::STDERR_FILENO);
+    let res = f();
+    libc::dup2(stderr_backup, libc::STDERR_FILENO);
+    libc::close(stderr_backup);
+    res
 }
 
 #[cfg(test)]
