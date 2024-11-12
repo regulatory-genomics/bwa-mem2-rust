@@ -1,6 +1,7 @@
 use std::{ffi::{CStr, CString}, os::fd::AsRawFd, path::Path};
 use itertools::Itertools;
 use noodles::sam::{self, header::record::value::map::ReferenceSequence};
+use noodles::sam::alignment::RecordBuf;
 use noodles::sam::header::record::value::Map;
 use noodles::fastq;
 use bstr::ByteSlice;
@@ -245,20 +246,23 @@ impl BurrowsWheelerAligner {
         self.opts.get_actual_chunk_size()
     }
 
-    pub fn align_reads(&mut self, records: &mut [fastq::Record]) -> impl ExactSizeIterator<Item = sam::Record> {
+    pub fn align_reads(&mut self, records: &mut [fastq::Record]) -> impl ExactSizeIterator<Item = RecordBuf> + '_ {
         let seqs: Vec<_> = records.iter_mut().enumerate().map(|(i, fq)| new_bseq1_t(i, fq)).collect();
         let opts = self.opts.opts.clone();
         align(seqs, &mut self.index, opts, &self.pe_stats)
+            .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
     }
 
     pub fn align_read_pairs(&mut self, records: &mut [(fastq::Record, fastq::Record)]) ->
-        impl ExactSizeIterator<Item = (sam::Record, sam::Record)>
+        impl ExactSizeIterator<Item = (RecordBuf, RecordBuf)> + '_
     {
         let seqs = records.iter_mut().enumerate().flat_map(|(i, (fq1, fq2))|
             [new_bseq1_t(i, fq1), new_bseq1_t(i+1, fq2)]
         ).collect::<Vec<_>>();
         let opts = self.opts.clone().pe_mode().opts;
-        align(seqs, &mut self.index, opts, &self.pe_stats).tuples()
+        align(seqs, &mut self.index, opts, &self.pe_stats)
+            .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
+            .tuples()
     }
 }
 
@@ -287,7 +291,7 @@ fn align(
         ));
 
         seqs.into_iter().map(|seq| {
-            let sam = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
+            let sam: sam::Record = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
             libc::free(seq.sam as *mut libc::c_void);
             sam
         })
@@ -324,6 +328,7 @@ mod tests {
     use noodles::fastq;
     use flate2;
     use itertools::Itertools;
+    use noodles::sam::alignment::io::Write;
 
     #[test]
     fn test_index() {
@@ -348,7 +353,7 @@ mod tests {
         reader.records().map(|x| x.unwrap()).chunks(100000).into_iter().for_each(|chunk| {
             let mut records: Vec<_> = chunk.collect();
             for sam in aligner.align_reads(&mut records) {
-                writer.write_record(&header, &sam).unwrap();
+                writer.write_alignment_record(&header, &sam).unwrap();
             }
         });
     }
