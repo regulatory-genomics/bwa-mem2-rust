@@ -6,9 +6,6 @@ use noodles::sam::header::record::value::Map;
 use noodles::fastq;
 use bstr::ByteSlice;
 
-#[derive(Debug)]
-pub struct IndexError(String);
-
 /// A BWA reference object to perform alignments to.
 /// Must be loaded from a BWA index created with `bwa index`
 #[derive(Debug)]
@@ -20,7 +17,7 @@ pub struct FMIndex {
 }
 
 impl FMIndex {
-    pub fn new<P1: AsRef<Path>, P2: AsRef<Path>>(fasta: P1, location: P2) -> Result<Self, IndexError> {
+    pub fn new<P1: AsRef<Path>, P2: AsRef<Path>>(fasta: P1, location: P2) -> Result<Self, std::io::Error> {
         let fasta_file = CString::new(fasta.as_ref().to_str().unwrap()).unwrap();
         let prefix = CString::new(location.as_ref().to_str().unwrap()).unwrap();
         unsafe {
@@ -31,7 +28,7 @@ impl FMIndex {
 
     /// Load a BWA reference from disk. Pass the fasta filename of the
     /// original reference as `path`
-    pub fn read<P: AsRef<Path>>(path: P) -> Result<Self, IndexError> {
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
         let idx_file = CString::new(path.as_ref().to_str().unwrap()).unwrap();
         let mut contig_names = Vec::new();
         let mut contig_lengths = Vec::new();
@@ -103,15 +100,6 @@ impl AlignerOpts {
         Self { opts }
     }
 
-    pub fn get_actual_chunk_size(&self) -> usize {
-        (self.opts.chunk_size * self.opts.n_threads as i64).try_into().unwrap()
-    }
-
-    pub fn with_n_threads(mut self, n_threads: usize) -> Self {
-        self.opts.n_threads = n_threads as i32;
-        self
-    }
-
     /// Set alignment scores
     pub fn with_scores(
         mut self,
@@ -149,6 +137,11 @@ impl AlignerOpts {
     /// Mark shorter splits as secondary
     pub fn with_no_multi(mut self) -> Self {
         self.opts.flag |= 0x10; // MEM_F_NO_MULTI
+        self
+    }
+
+    fn with_n_threads(mut self, n_threads: u16) -> Self {
+        self.opts.n_threads = n_threads as i32;
         self
     }
 
@@ -241,25 +234,31 @@ impl BurrowsWheelerAligner {
         self.header.clone()
     }
 
-    /// Return the chunk size (in terms of number of bases) used by the aligner
-    pub fn chunk_size(&self) -> usize {
-        self.opts.get_actual_chunk_size()
-    }
+    /// Align a set of reads to the reference
+    pub fn align_reads(&mut self, num_threads: u16, records: &mut [fastq::Record]) -> impl ExactSizeIterator<Item = RecordBuf> + '_ {
+        // Determine the optimal chunk size according to the number of threads.
+        // The chunk size used by BWA is the number of bases to align per thread.
+        let num_bases = records.iter().map(|fq| fq.sequence().len()).sum::<usize>();
+        let chunk_size = num_bases / num_threads as usize;
+        let mut opts = self.opts.clone().with_n_threads(num_threads).opts;
+        opts.chunk_size = chunk_size.try_into().unwrap();
 
-    pub fn align_reads(&mut self, records: &mut [fastq::Record]) -> impl ExactSizeIterator<Item = RecordBuf> + '_ {
         let seqs: Vec<_> = records.iter_mut().enumerate().map(|(i, fq)| new_bseq1_t(i, fq)).collect();
-        let opts = self.opts.opts.clone();
         align(seqs, &mut self.index, opts, &self.pe_stats)
             .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
     }
 
-    pub fn align_read_pairs(&mut self, records: &mut [(fastq::Record, fastq::Record)]) ->
+    pub fn align_read_pairs(&mut self, num_threads: u16, records: &mut [(fastq::Record, fastq::Record)]) ->
         impl ExactSizeIterator<Item = (RecordBuf, RecordBuf)> + '_
     {
+        let num_bases = records.iter().map(|(fq1, fq2)| fq1.sequence().len() + fq2.sequence().len()).sum::<usize>();
+        let chunk_size = num_bases / num_threads as usize;
+        let mut opts = self.opts.clone().with_n_threads(num_threads).pe_mode().opts;
+        opts.chunk_size = chunk_size.try_into().unwrap();
+
         let seqs = records.iter_mut().enumerate().flat_map(|(i, (fq1, fq2))|
             [new_bseq1_t(i, fq1), new_bseq1_t(i+1, fq2)]
         ).collect::<Vec<_>>();
-        let opts = self.opts.clone().pe_mode().opts;
         align(seqs, &mut self.index, opts, &self.pe_stats)
             .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
             .tuples()
@@ -352,7 +351,7 @@ mod tests {
         let mut reader = fastq::Reader::new(BufReader::new(reader));
         reader.records().map(|x| x.unwrap()).chunks(100000).into_iter().for_each(|chunk| {
             let mut records: Vec<_> = chunk.collect();
-            for sam in aligner.align_reads(&mut records) {
+            for sam in aligner.align_reads(8, &mut records) {
                 writer.write_alignment_record(&header, &sam).unwrap();
             }
         });
