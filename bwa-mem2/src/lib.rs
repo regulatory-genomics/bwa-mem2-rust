@@ -16,6 +16,9 @@ pub struct FMIndex {
     contig_lengths: Vec<usize>,
 }
 
+unsafe impl Send for FMIndex {}
+unsafe impl Sync for FMIndex {}
+
 impl FMIndex {
     pub fn new<P1: AsRef<Path>, P2: AsRef<Path>>(fasta: P1, location: P2) -> Result<Self, std::io::Error> {
         let fasta_file = CString::new(fasta.as_ref().to_str().unwrap()).unwrap();
