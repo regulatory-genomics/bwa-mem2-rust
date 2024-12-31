@@ -294,7 +294,9 @@ fn align(
 
         seqs.into_iter().map(|seq| {
             let sam: sam::Record = CStr::from_ptr(seq.sam).to_str().unwrap().as_bytes().try_into().unwrap();
+            drop(CString::from_raw(seq.name));
             libc::free(seq.sam as *mut libc::c_void);
+            libc::free(seq.comment as *mut libc::c_void);
             sam
         })
     }
