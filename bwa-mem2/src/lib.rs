@@ -103,14 +103,13 @@ impl AlignerOpts {
         Self { opts }
     }
 
+    pub fn min_seed_len(&self) -> u16 {
+        self.opts.min_seed_len.try_into().unwrap()
+    }
+
     /// Set the minimum seed length. Matches shorter than seed length will be missed.
     /// The alignment speed is usually insensitive to this value unless it significantly
     /// deviates 20. The default is 19.
-    pub fn with_min_seed_len(mut self, len: u16) -> Self {
-        self.opts.min_seed_len = len as i32;
-        self
-    }
-
     pub fn set_min_seed_len(&mut self, len: u16) {
         self.opts.min_seed_len = len as i32;
     }
