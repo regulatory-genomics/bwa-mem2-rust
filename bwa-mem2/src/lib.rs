@@ -111,6 +111,10 @@ impl AlignerOpts {
         self
     }
 
+    pub fn set_min_seed_len(&mut self, len: u16) {
+        self.opts.min_seed_len = len as i32;
+    }
+
     /// Set alignment scores
     pub fn with_scores(
         mut self,
