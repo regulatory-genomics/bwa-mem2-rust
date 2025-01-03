@@ -208,10 +208,10 @@ impl PairedEndStats {
 /// A BWA aligner. Carries everything required to align
 /// reads to a reference and generate BAM records.
 pub struct BurrowsWheelerAligner {
-    index: FMIndex,
-    opts: AlignerOpts,
+    pub opts: AlignerOpts,
     header: sam::Header,
     pe_stats: PairedEndStats,
+    index: FMIndex,
 }
 
 struct WorkerWrapper {
