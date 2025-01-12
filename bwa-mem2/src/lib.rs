@@ -138,6 +138,16 @@ impl AlignerOpts {
         self.output_log = false;
     }
 
+    pub fn max_occurrence(&self) -> u16 {
+        self.opts.max_occ.try_into().unwrap()
+    }
+
+    /// Set the maximum number of occurrences of a seed in the reference.
+    /// Skip a seed if its occurence is larger than this value. The default is 500.
+    pub fn set_max_occurrence(&mut self, max_occ: u16) {
+        self.opts.max_occ = max_occ as i32;
+    }
+
     pub fn min_seed_len(&self) -> u16 {
         self.opts.min_seed_len.try_into().unwrap()
     }
