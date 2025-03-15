@@ -215,16 +215,10 @@ pub struct PairedEndStats {
     inner: [bwa_mem2_sys::mem_pestat_t; 4],
 }
 
-impl Default for PairedEndStats {
-    fn default() -> Self {
-        Self::simple(200.0, 100.0, 35, 600)
-    }
-}
-
 impl PairedEndStats {
     /// Generate a 'simple' paired-end read structure that standard forward-reverse
     /// pairs as created by TruSeq, Nextera, or Chromium Genome sample preparations.
-    pub fn simple(avg: f64, std: f64, low: i32, high: i32) -> PairedEndStats {
+    pub fn new(avg: f64, std: f64, low: i32, high: i32) -> PairedEndStats {
         let pe_stat_null = || bwa_mem2_sys::mem_pestat_t {
             failed: 1,
             low: 0,
@@ -255,7 +249,7 @@ impl PairedEndStats {
 pub struct BurrowsWheelerAligner {
     pub opts: AlignerOpts,
     header: sam::Header,
-    pe_stats: PairedEndStats,
+    pe_stats: Option<PairedEndStats>,  // If None, inferred from the data
     index: FMIndex,
 }
 
@@ -280,13 +274,13 @@ impl Drop for WorkerWrapper {
 }
 
 impl BurrowsWheelerAligner {
-    pub fn new(index: FMIndex, opts: AlignerOpts, pe_stats: PairedEndStats) -> Self {
+    pub fn new(index: FMIndex, opts: AlignerOpts) -> Self {
         let header = index.create_sam_header();
         Self {
             index,
             opts,
             header,
-            pe_stats,
+            pe_stats: None,
         }
     }
 
@@ -316,7 +310,7 @@ impl BurrowsWheelerAligner {
             seqs,
             &mut self.index,
             opts,
-            &self.pe_stats,
+            None,
             self.opts.output_log,
         )
         .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
@@ -344,7 +338,7 @@ impl BurrowsWheelerAligner {
             seqs,
             &mut self.index,
             opts,
-            &self.pe_stats,
+            self.pe_stats.as_ref(),
             self.opts.output_log,
         )
         .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
@@ -356,11 +350,15 @@ fn align(
     mut seqs: Vec<bwa_mem2_sys::bseq1_t>,
     index: &mut FMIndex,
     mut opts: bwa_mem2_sys::mem_opt_t,
-    pe_stats: &PairedEndStats,
+    pe_stats: Option<&PairedEndStats>,
     output_log: bool,
 ) -> impl ExactSizeIterator<Item = sam::Record> {
     let num_reads = seqs.len().try_into().unwrap();
     let worker = WorkerWrapper::new(num_reads, opts.n_threads);
+    let pes0 = match pe_stats {
+        Some(p) => p.inner.as_ptr(),
+        None => std::ptr::null(),
+    };
     unsafe {
         (*worker.ptr).ref_string = index.ref_bytes.as_ptr() as *mut u8;
         (*worker.ptr).nthreads = opts.n_threads.try_into().unwrap();
@@ -373,7 +371,7 @@ fn align(
                 0,
                 num_reads,
                 seqs.as_mut_ptr(),
-                pe_stats.inner.as_ptr(),
+                pes0,
                 worker.ptr,
             );
         } else {
@@ -383,7 +381,7 @@ fn align(
                     0,
                     num_reads,
                     seqs.as_mut_ptr(),
-                    pe_stats.inner.as_ptr(),
+                    pes0,
                     worker.ptr,
                 )
             });
@@ -446,7 +444,7 @@ mod tests {
     fn test_align() {
         let idx = FMIndex::new(FASTA, INDEX).unwrap();
         let opt = AlignerOpts::default();
-        let mut aligner = BurrowsWheelerAligner::new(idx, opt, PairedEndStats::default());
+        let mut aligner = BurrowsWheelerAligner::new(idx, opt);
         aligner.opts.enable_log();
         let header = aligner.get_sam_header();
 
