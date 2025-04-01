@@ -44,6 +44,7 @@ fn build_libsafestring() {
         .flag("-fPIE")
         .flag("-fPIC")
         .flag("-O2")
+        .define("STDC_HEADERS", None)
         .define("_FORTIFY_SOURCE", "2")
         .flag("-Wformat")
         .flag("-Wformat-security")
