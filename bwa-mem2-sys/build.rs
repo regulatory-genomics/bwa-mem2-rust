@@ -123,7 +123,21 @@ fn main() {
     // Compile to static library
     build.compile("libbwa_mem2.a");
 
-    println!("cargo:rustc-link-search=native={}", env::var("OUT_DIR").unwrap());
+    // Post-build: localize the "stat" BSS symbol to prevent conflicts
+    // with libc stat() when linked alongside STAR or other C libraries.
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let lib_path = Path::new(&out_dir).join("libbwa_mem2.a");
+    let status = std::process::Command::new("objcopy")
+        .arg("--localize-symbol=stat")
+        .arg(&lib_path)
+        .status();
+    match status {
+        Ok(s) if s.success() => {},
+        Ok(s) => println!("cargo:warning=objcopy --localize-symbol=stat failed: {}", s),
+        Err(e) => println!("cargo:warning=objcopy not found, stat symbol conflict may occur: {}", e),
+    }
+
+    println!("cargo:rustc-link-search=native={}", out_dir);
 
     // Link the pre-built safestringlib
     //println!("cargo:rustc-link-lib=static=safestring");

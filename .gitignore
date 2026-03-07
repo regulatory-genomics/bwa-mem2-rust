@@ -1,1 +1,4 @@
 /target
+
+# test temp files
+bwa-mem2/tests/temp.*

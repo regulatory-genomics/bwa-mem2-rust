@@ -1,5 +1,4 @@
 use bstr::ByteSlice;
-use itertools::Itertools;
 use noodles::fastq;
 use noodles::sam::alignment::RecordBuf;
 use noodles::sam::header::record::value::Map;
@@ -199,6 +198,22 @@ impl AlignerOpts {
         self
     }
 
+    /// Implement the -M parameter: Mark shorter split hits as secondary (flag 256)
+    /// instead of supplementary (flag 2048).
+    /// This corresponds to `MEM_F_NO_MULTI` (0x10) in BWA source.
+    pub fn mark_split_as_secondary(mut self) -> Self {
+        self.opts.flag |= bwa_mem2_sys::MEM_F_NO_MULTI as i32;
+        self
+    }
+
+    /// Implement the -5 parameter: For split alignment, take the alignment with
+    /// the smallest coordinate as primary.
+    /// This corresponds to `MEM_F_PRIMARY5` (0x800) in BWA source.
+    pub fn with_primary5(mut self) -> Self {
+        self.opts.flag |= bwa_mem2_sys::MEM_F_PRIMARY5 as i32;
+        self
+    }
+
     fn with_n_threads(mut self, n_threads: u16) -> Self {
         self.opts.n_threads = n_threads as i32;
         self
@@ -208,6 +223,7 @@ impl AlignerOpts {
         self.opts.flag |= bwa_mem2_sys::MEM_F_PE as i32;
         self
     }
+
 }
 
 /// Paired-end statistics structure used by BWA to score paired-end reads
@@ -293,7 +309,7 @@ impl BurrowsWheelerAligner {
         &mut self,
         num_threads: u16,
         records: &mut [fastq::Record],
-    ) -> impl ExactSizeIterator<Item = RecordBuf> + '_ {
+    ) -> impl Iterator<Item = RecordBuf> + '_ {
         // Determine the optimal chunk size according to the number of threads.
         // The chunk size used by BWA is the number of bases to align per thread.
         let num_bases = records.iter().map(|fq| fq.sequence().len()).sum::<usize>();
@@ -312,15 +328,15 @@ impl BurrowsWheelerAligner {
             opts,
             None,
             self.opts.output_log,
+            &self.header,
         )
-        .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
     }
 
     pub fn align_read_pairs(
         &mut self,
         num_threads: u16,
         records: &mut [(fastq::Record, fastq::Record)],
-    ) -> impl ExactSizeIterator<Item = (RecordBuf, RecordBuf)> + '_ {
+    ) -> impl Iterator<Item = RecordBuf> + '_ {
         let num_bases = records
             .iter()
             .map(|(fq1, fq2)| fq1.sequence().len() + fq2.sequence().len())
@@ -340,25 +356,26 @@ impl BurrowsWheelerAligner {
             opts,
             self.pe_stats.as_ref(),
             self.opts.output_log,
+            &self.header,
         )
-        .map(|sam| RecordBuf::try_from_alignment_record(&self.header, &sam).unwrap())
-        .tuples()
     }
 }
 
-fn align(
+fn align<'a>(
     mut seqs: Vec<bwa_mem2_sys::bseq1_t>,
     index: &mut FMIndex,
     mut opts: bwa_mem2_sys::mem_opt_t,
     pe_stats: Option<&PairedEndStats>,
     output_log: bool,
-) -> impl ExactSizeIterator<Item = sam::Record> {
+    header: &'a sam::Header,
+) -> impl Iterator<Item = RecordBuf> + 'a {
     let num_reads = seqs.len().try_into().unwrap();
     let worker = WorkerWrapper::new(num_reads, opts.n_threads);
     let pes0 = match pe_stats {
         Some(p) => p.inner.as_ptr(),
         None => std::ptr::null(),
     };
+
     unsafe {
         (*worker.ptr).ref_string = index.ref_bytes.as_ptr() as *mut u8;
         (*worker.ptr).nthreads = opts.n_threads.try_into().unwrap();
@@ -366,38 +383,38 @@ fn align(
         (*worker.ptr).fmi = &mut index.fm_index as *mut bwa_mem2_sys::FMI_search;
 
         if output_log {
-            bwa_mem2_sys::mem_process_seqs(
-                &mut opts,
-                0,
-                num_reads,
-                seqs.as_mut_ptr(),
-                pes0,
-                worker.ptr,
-            );
+            bwa_mem2_sys::mem_process_seqs(&mut opts, 0, num_reads, seqs.as_mut_ptr(), pes0, worker.ptr);
         } else {
             with_stderr_disabled(|| {
-                bwa_mem2_sys::mem_process_seqs(
-                    &mut opts,
-                    0,
-                    num_reads,
-                    seqs.as_mut_ptr(),
-                    pes0,
-                    worker.ptr,
-                )
+                bwa_mem2_sys::mem_process_seqs(&mut opts, 0, num_reads, seqs.as_mut_ptr(), pes0, worker.ptr)
             });
         }
 
-        seqs.into_iter().map(|seq| {
-            let sam: sam::Record = CStr::from_ptr(seq.sam)
-                .to_str()
-                .unwrap()
-                .as_bytes()
-                .try_into()
-                .unwrap();
+        seqs.into_iter().flat_map(move |seq| {
+            // OPTIMIZATION: Create a temporary slice directly from C pointer (No String allocation)
+            let c_str = CStr::from_ptr(seq.sam);
+            let s_slice = c_str.to_str().expect("Invalid UTF-8 from BWA");
+
+            let mut records = Vec::new();
+
+            // Parse all lines (Primary + Supplementary)
+            for line in s_slice.lines() {
+                if line.is_empty() || line.starts_with('@') { continue; }
+
+                if let Ok(rec) = sam::Record::try_from(line.as_bytes()) {
+                    // Convert to owned RecordBuf immediately so we can keep it after freeing C memory
+                    if let Ok(owned_rec) = RecordBuf::try_from_alignment_record(header, &rec) {
+                        records.push(owned_rec);
+                    }
+                }
+            }
+
+            // Free C memory AFTER we have extracted the data into Rust objects
             drop(CString::from_raw(seq.name));
             libc::free(seq.sam as *mut libc::c_void);
             libc::free(seq.comment as *mut libc::c_void);
-            sam
+
+            records.into_iter()
         })
     }
 }
